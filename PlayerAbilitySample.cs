@@ -13,7 +13,7 @@ public abstract class Entity : MonoBehaviour
     // In the context of the player, states enable/disable abilities to define the functionality of a state.
     protected EntityStateMachine _stateMachine;
 
-    // This preprocessor directive is technically not needed, but is included to be more explicate about the fact that the code is not included in a production build.
+    // This preprocessor directive is technically not needed, but is included to be more explicit about the fact that the code is not included in a production build.
 #if UNITY_EDITOR
     private void OnDrawGizmos()
     {
@@ -24,13 +24,18 @@ public abstract class Entity : MonoBehaviour
 
 public class PlayerCharacter : Entity
 {
-    public PlayerController Controller = new();
-    [HideInInspector] public Rigidbody PlayerRigidBody;
+    public readonly PlayerController Controller = new();
+    public Rigidbody PlayerRigidBody { get; private set; }
 
     public void Awake()
     {
         InitializePlayerStateMachine();
         PlayerRigidBody = GetComponent<Rigidbody>();
+    }
+
+    public void OnDestroy()
+    {
+        Controller.ClearRegisteredAbilities();
     }
 
     private void InitializePlayerStateMachine()
@@ -60,9 +65,21 @@ public class PlayerController
     // in this scheme each ability is responsible for handling player inputs themselves by connecting to the new player input system
     private readonly Dictionary<Type, PlayerAbility> _playerAbilities = new();
 
-    public void RegisterAbility(PlayerAbility ability)
+    public bool TryRegisterAbility(PlayerAbility ability)
     {
+        if (_playerAbilities.ContainsKey(type))
+        {
+            Debug.LogWarning($"{type.Name} already registered.");
+            return false;
+        }
+
         _playerAbilities.Add(ability.GetType(), ability);
+        return true;
+    }
+
+    public void UnregisterAbility(PlayerAbility ability)
+    {
+        _playerAbilities.Remove(ability.GetType());
     }
 
     public void ClearRegisteredAbilities()
@@ -77,7 +94,7 @@ public class PlayerController
     public T FindPlayerAbility<T>() where T : PlayerAbility
     {
         _playerAbilities.TryGetValue(typeof(T), out var ability);
-        return (T)ability;
+        return ability as T;
     }
 
     public PlayerAbility FindPlayerAbility(Type type)
@@ -97,19 +114,19 @@ public abstract class PlayerAbility : MonoBehaviour
     protected virtual void Awake()
     {
         _player = GetComponent<PlayerCharacter>();
-        _player.Controller.RegisterAbility(this);
+        _player.Controller.TryRegisterAbility(this);
     }
 
-    public virtual void PreformAction(InputAction.CallbackContext context)
+    public virtual void PerformAction(InputAction.CallbackContext context)
     {
         if (_isActionEnabled)
         {
-            Action(context);
+            OnActionPerformed(context);
         }
     }
 
     // an abstract function for an ability's specific action
-    protected abstract void Action(InputAction.CallbackContext context);
+    protected abstract void OnActionPerformed(InputAction.CallbackContext context);
 
     // Enabled and disable functions are kept seperate to make calls more explicate (Mostly a personal preference)
     public virtual void EnableAbility()
@@ -126,14 +143,14 @@ public abstract class PlayerAbility : MonoBehaviour
 public class PlayerLook : PlayerAbility
 {
     [Header("Camera Movement Parameters")]
-    [SerializeField] float horizontalSensitivity;
-    [SerializeField] float verticalSensitivity;
-    [SerializeField] bool invertHorizontal;
-    [SerializeField] bool invertVertical;
-    [SerializeField] float cameraHorizontalRangeOfMotion;
+    [SerializeField] private float _horizontalSensitivity;
+    [SerializeField] private float _verticalSensitivity;
+    [SerializeField] private bool _invertHorizontal;
+    [SerializeField] private bool _invertVertical;
+    [SerializeField] private float _cameraVerticalRangeOfMotion;
 
-    [Header("Camera Obeject Parameters")]
-    [SerializeField] Transform rotatableObjects;
+    [Header("Camera Object Parameters")]
+    [SerializeField] private Transform _rotatableObjects;
 
     protected override void Awake()
     {
@@ -144,7 +161,7 @@ public class PlayerLook : PlayerAbility
     }
 
     // action to be called when the mouse moves
-    protected override void Action(InputAction.CallbackContext context)
+    protected override void OnActionPerformed(InputAction.CallbackContext context)
     {
         Vector2 delta = context.ReadValue<Vector2>();
 
@@ -152,36 +169,37 @@ public class PlayerLook : PlayerAbility
         VerticalRotation(delta.y);
     }
 
-    void HorizontalRotation(float deltaX)
+    private void HorizontalRotation(float deltaX)
     {
-        float horizontalRotation = deltaX * horizontalSensitivity * Invert(invertHorizontal);
+        float horizontalRotation = deltaX * _horizontalSensitivity * Invert(_invertHorizontal);
 
         Quaternion horizontalRotationQuaternion = Quaternion.AngleAxis(horizontalRotation, transform.up) * _player.PlayerRigidBody.rotation;
         _player.PlayerRigidBody.MoveRotation(horizontalRotationQuaternion);
     }
 
-    void VerticalRotation(float deltaY)
+    // We intentionally use Euler angles in this function over quaternions for readability
+    private void VerticalRotation(float deltaY)
     {
-        float verticalRotation = -(deltaY * verticalSensitivity) * Invert(invertVertical);
-        float currentVerticalRotation = RelativeToForward(rotatableObjects.localEulerAngles.x);
+        float verticalRotation = -(deltaY * _verticalSensitivity) * Invert(_invertVertical);
+        float currentVerticalRotation = RelativeToForward(_rotatableObjects.localEulerAngles.x);
 
-        float min = -cameraHorizontalRangeOfMotion - currentVerticalRotation;
-        float max = cameraHorizontalRangeOfMotion - currentVerticalRotation;
+        float min = -_cameraVerticalRangeOfMotion - currentVerticalRotation;
+        float max = _cameraVerticalRangeOfMotion - currentVerticalRotation;
 
         verticalRotation = Mathf.Clamp(verticalRotation, min, max);
 
         Vector3 verticalRotationVector = new Vector3(verticalRotation, 0f, 0f);
-        rotatableObjects.Rotate(verticalRotationVector);
+        _rotatableObjects.Rotate(verticalRotationVector);
     }
 
     // Changes the range of a euler angle from 0 - 360 degrees to -180 - 180. This works so that 0 is in the direction of the local forward of the transform.
-    float RelativeToForward(float eulerRotation)
+    private float RelativeToForward(float eulerRotation)
     {
         return (eulerRotation >= 180) ? eulerRotation - 360 : eulerRotation;
     }
 
     // Inverts equation on true and leaves the same on false
-    float Invert(bool isInverted)
+    private float Invert(bool isInverted)
     {
         return isInverted ? -1 : 1;
     }
